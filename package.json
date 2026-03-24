@@ -1,0 +1,18 @@
+{
+  "name": "coze-proxy-server",
+  "version": "1.0.0",
+  "description": "扣子API代理服务 - 微信云托管版本",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "axios": "^1.6.0",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
