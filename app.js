@@ -5,12 +5,12 @@ const crypto = require('crypto')
 
 const app = express()
 app.use(express.json())
-app.use(require('cors')())  // 允许跨域请求
+app.use(require('cors')()) // 允许跨域请求
 
 // === 配置区域 - 请替换为你的实际值 ===
 const COZE_CONFIG = {
-  appId: '1162063759694',  // OAuth应用ID
-  publicKeyKid: '_7rZVoU75QFMPq5KCqqiz058BDV78y4KEcs7EKK4gcg',  // 公钥指纹
+  appId: '1162063759694', // OAuth应用ID
+  publicKeyKid: '_7rZVoU75QFMPq5KCqqiz058BDV78y4KEcs7EKK4gcg', // 公钥指纹
   privateKey: `-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCsNyc4P8YFgg5j
 8VH8aK1HQr8HoRik4TmZ8+tzWQSDmJmupaqYJIycp/JRngbbpeDnHb2sc4bu3vq0
@@ -40,6 +40,7 @@ ff1WfSrCg1cyWEYlGpSxnLIvHOXIlYOb1jDT5iVeizCdvD3ksQT3ThxARJeZ6OD2
 r+s+l2rHMhpjIvmBQLEQDC/W
 -----END PRIVATE KEY-----`
 }
+
 // ================================
 
 /**
@@ -49,27 +50,26 @@ function generateRandomString(length = 32) {
   return crypto.randomBytes(length).toString('hex')
 }
 
-/** 
+/**
  * 签署JWT
  */
 function generateJWT(userId) {
   const now = Math.floor(Date.now() / 1000)
-  
   const payload = {
     iss: COZE_CONFIG.appId,
     aud: 'api.coze.cn',
     iat: now,
-    exp: now + 600,  // JWT有效期10分钟
+    exp: now + 600, // JWT有效期10分钟
     jti: generateRandomString(),
-    session_name: userId || 'anonymous'  // 用于会话隔离
+    session_name: userId || 'anonymous' // 用于会话隔离
   }
-  
+
   const header = {
     alg: 'RS256',
     typ: 'JWT',
     kid: COZE_CONFIG.publicKeyKid
   }
-  
+
   return jwt.sign(payload, COZE_CONFIG.privateKey, {
     algorithm: 'RS256',
     header: header
@@ -86,21 +86,23 @@ let tokenCache = {
 
 async function getAccessToken(userId) {
   const now = Math.floor(Date.now() / 1000)
-  
+
   // 如果缓存未过期，直接返回
   if (tokenCache.accessToken && tokenCache.expiresAt > now + 300) {
+    console.log('✅ 使用缓存的 Access Token')
     return tokenCache.accessToken
   }
-  
+
   // 生成新的JWT
   const jwtToken = generateJWT(userId)
-  
+  console.log('🔐 生成新的 JWT Token')
+
   // 调用扣子API获取Access Token
   const response = await axios.post(
     'https://api.coze.cn/api/permission/oauth2/token',
     {
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      duration_seconds: 3600  // Access Token有效期1小时
+      duration_seconds: 3600 // Access Token有效期1小时
     },
     {
       headers: {
@@ -109,51 +111,60 @@ async function getAccessToken(userId) {
       }
     }
   )
-  
+
   // 缓存Access Token
   tokenCache = {
     accessToken: response.data.access_token,
     expiresAt: response.data.expires_in
   }
-  
+
+  console.log('✅ 获取新的 Access Token 成功')
+
   return tokenCache.accessToken
 }
 
-/** 
+/**
  * 健康检查接口（微信云托管需要）
  */
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'coze-proxy' })
+  res.json({
+    status: 'ok',
+    service: 'coze-proxy',
+    timestamp: new Date().toISOString()
+  })
 })
 
 /**
- * 聊天接口
+ * 聊天接口（修复版）
  */
 app.post('/api/coze/chat', async (req, res) => {
   const { botId, message, userId } = req.body
-  
+
+  console.log('=== 收到聊天请求 ===')
+  console.log('Bot ID:', botId)
+  console.log('User ID:', userId || 'anonymous')
+  console.log('Message:', message.substring(0, 100) + (message.length > 100 ? '...' : ''))
+
   if (!botId || !message) {
     return res.status(400).json({
       success: false,
       error: '缺少必要参数: botId 和 message'
     })
   }
-  
+
   try {
     // 1. 获取Access Token
     const accessToken = await getAccessToken(userId || 'default')
-    
-    // 2. 调用扣子聊天API
+
+    console.log('🚀 调用 Coze API...')
+
+    // 2. 调用扣子聊天API（使用正确的 API 版本和参数）
     const response = await axios.post(
-      'https://api.coze.cn/v3/chat',
+      'https://api.coze.cn/open_api/v2/chat',  // ✅ 修复：使用正确的 API 端点
       {
         bot_id: botId,
-        user_id: userId || 'anonymous',
-        additional_messages: [{
-          role: 'user',
-          content: message,
-          content_type: 'text'
-        }],
+        user: userId || 'anonymous',  // ✅ 修复：参数名是 user
+        query: message,                // ✅ 修复：参数名是 query
         stream: false
       },
       {
@@ -163,55 +174,87 @@ app.post('/api/coze/chat', async (req, res) => {
         }
       }
     )
-    
-    // 3. 返回结果
+
+    console.log('📦 Coze API 响应状态:', response.status)
+    console.log('📦 Coze API 响应数据:', JSON.stringify(response.data, null, 2))
+
+    // 3. 检查响应
+    if (response.data.code !== 0) {
+      console.error('❌ Coze API 返回错误:', response.data)
+      return res.json({
+        success: false,
+        error: response.data.msg || 'Coze API 错误',
+        code: response.data.code
+      })
+    }
+
+    // 4. 提取回复内容（从 messages 数组中获取最后一条消息）
+    const messages = response.data.messages || []
+    let replyContent = '暂无回复'
+
+    if (messages.length > 0) {
+      // 获取最后一条 assistant 消息
+      const lastAssistantMessage = messages
+        .filter(msg => msg.type === 'answer')
+        .pop()
+
+      if (lastAssistantMessage) {
+        replyContent = lastAssistantMessage.content
+      } else {
+        // 如果没有 answer 类型的消息，获取最后一条消息
+        const lastMessage = messages[messages.length - 1]
+        replyContent = lastMessage.content || '暂无回复'
+      }
+    }
+
+    console.log('✅ 提取到的回复内容:', replyContent.substring(0, 100) + '...')
+
+    // 5. 返回结果
     res.json({
       success: true,
-      reply: response.data.messages?.[0]?.content || '暂无回复',
+      reply: replyContent,
       data: response.data
     })
-    
+
   } catch (error) {
-    console.error('API调用错误:', error.response?.data || error.message)
-    
+    console.error('❌ API调用错误:')
+    console.error('错误详情:', error.response?.data || error.message)
+
     res.status(error.response?.status || 500).json({
       success: false,
-      error: error.response?.data?.message || error.message
+      error: error.response?.data?.message || error.message,
+      details: error.response?.data
     })
   }
 })
 
-/** 
+/**
  * 流式聊天接口（可选）
  */
 app.post('/api/coze/chat/stream', async (req, res) => {
   const { botId, message, userId } = req.body
-  
+
   if (!botId || !message) {
     return res.status(400).json({
       success: false,
       error: '缺少必要参数'
     })
   }
-  
+
   // 设置SSE响应头
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
-  
+
   try {
     const accessToken = await getAccessToken(userId || 'default')
-    
+
     const response = await axios.post(
-      'https://api.coze.cn/v3/chat',
+      'https://api.coze.cn/open_api/v2/chat',  // ✅ 修复：使用正确的 API 端点
       {
         bot_id: botId,
-        user_id: userId || 'anonymous',
-        additional_messages: [{
-          role: 'user',
-          content: message,
-          content_type: 'text'
-        }],
+        user: userId || 'anonymous',  // ✅ 修复：参数名是 user
+        query: message,                // ✅ 修复：参数名是 query
         stream: true
       },
       {
@@ -222,21 +265,21 @@ app.post('/api/coze/chat/stream', async (req, res) => {
         responseType: 'stream'
       }
     )
-    
+
     // 转发流式响应
     response.data.on('data', (chunk) => {
       res.write(chunk)
     })
-    
+
     response.data.on('end', () => {
       res.end()
     })
-    
+
     response.data.on('error', (err) => {
       console.error('流式传输错误:', err)
       res.end()
     })
-    
+
   } catch (error) {
     console.error('流式聊天错误:', error.message)
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`)
@@ -247,5 +290,9 @@ app.post('/api/coze/chat/stream', async (req, res) => {
 // 启动服务
 const PORT = process.env.PORT || 8080
 app.listen(PORT, () => {
-  console.log(`服务启动成功，端口: ${PORT}`)
+  console.log(`✅ Coze OAuth 代理服务启动成功`)
+  console.log(`📡 服务端口: ${PORT}`)
+  console.log(`🌐 健康检查: http://localhost:${PORT}/`)
+  console.log(`💬 聊天接口: http://localhost:${PORT}/api/coze/chat`)
+  console.log(`🌊 流式接口: http://localhost:${PORT}/api/coze/chat/stream`)
 })
